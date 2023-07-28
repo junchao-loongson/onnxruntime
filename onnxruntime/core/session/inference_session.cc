@@ -1829,46 +1829,48 @@ const DataTransferManager& InferenceSession::GetDataTransferManager() const {
   return data_transfer_mgr_;
 }
 
-common::Status InferenceSession::CheckShapes(const std::string& input_name, const TensorShape& input_shape,
-                                             const TensorShape& expected_shape) const {
-  auto input_shape_sz = input_shape.NumDimensions();
-  auto expected_shape_sz = expected_shape.NumDimensions();
-  if (input_shape_sz != expected_shape_sz) {
+common::Status InferenceSession::CheckShapes(const std::string& input_output_name, const TensorShape& input_output_shape,
+                                             const TensorShape& expected_shape, const char* input_output_moniker) const {
+  const auto shape_size = input_output_shape.NumDimensions();
+  const auto expected_shape_size = expected_shape.NumDimensions();
+  if (shape_size != expected_shape_size) {
     std::ostringstream ostr;
-    ostr << "Invalid rank for input: " << input_name << " Got: " << input_shape_sz << " Expected: " << expected_shape_sz
+    ostr << "Invalid rank for " << input_output_moniker << ": " << input_output_name << " Got: "
+         << shape_size << " Expected: " << expected_shape_size
          << " Please fix either the inputs or the model.";
     return Status(ONNXRUNTIME, INVALID_ARGUMENT, ostr.str());
   }
 
   std::vector<size_t> invalid_dim_indices;
-  for (size_t i = 0; i < input_shape_sz; ++i) {
+  for (size_t i = 0; i < shape_size; ++i) {
     if (expected_shape[i] < 0) {
       continue;  // this represents a symbolic shape dimension
     }
-    if (input_shape[i] != expected_shape[i]) {
+    if (input_output_shape[i] != expected_shape[i]) {
       invalid_dim_indices.push_back(i);
     }
   }
 
   if (!invalid_dim_indices.empty()) {
     std::ostringstream ostr;
-    ostr << "Got invalid dimensions for input: " << input_name << " for the following indices\n";
+    ostr << "Got invalid dimensions for " << input_output_moniker << ": " << input_output_name << " for the following indices\n";
     for (size_t i = 0, end = invalid_dim_indices.size(); i < end; ++i) {
       size_t idx = invalid_dim_indices[i];
-      ostr << " index: " << idx << " Got: " << input_shape[idx] << " Expected: " << expected_shape[idx] << "\n";
+      ostr << " index: " << idx << " Got: " << input_output_shape[idx] << " Expected: " << expected_shape[idx] << "\n";
     }
-    ostr << " Please fix either the inputs or the model.";
+    ostr << " Please fix either the inputs/outputs or the model.";
     return Status(ONNXRUNTIME, INVALID_ARGUMENT, ostr.str());
   }
   return Status::OK();
 }
 
-static common::Status CheckTypes(MLDataType actual, MLDataType expected, const std::string& base_type) {
+static common::Status CheckTypes(MLDataType actual, MLDataType expected, const std::string& base_type,
+                                 const char* input_output_moniker) {
   if (actual == expected) {
     return Status::OK();
   }
   std::ostringstream ostr;
-  ostr << "Unexpected input data type. Actual: (";
+  ostr << "Unexpected " << input_output_moniker << " data type. Actual: (";
   ostr << base_type;
   ostr << "(";
   ostr << DataTypeImpl::ToString(actual);
@@ -1881,30 +1883,42 @@ static common::Status CheckTypes(MLDataType actual, MLDataType expected, const s
   return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, ostr.str());
 }
 
-common::Status InferenceSession::ValidateInputs(gsl::span<const std::string> feed_names,
-                                                gsl::span<const OrtValue> feeds) const {
-  if (feed_names.size() != feeds.size()) {
-    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Size mismatch: feed_names has ", feed_names.size(),
-                           "elements, but feeds has ", feeds.size(), " elements.");
+common::Status InferenceSession::ValidateInputsOutputs(gsl::span<const std::string> names,
+                                                       gsl::span<const OrtValue> feeds_fetches, bool is_inputs) const {
+
+  const char* const input_output_moniker = is_inputs ? "Input" : "Output";
+  const char* const feed_fetches_moniker = is_inputs ? "Feed" : "Fetch";
+  const InputOutputDefMetaMap& input_output_meta_map = is_inputs ? input_def_map_ : output_def_map_;
+
+  if (names.size() != feeds_fetches.size()) {
+    return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Size mismatch: ", feed_fetches_moniker, " names has ", names.size(),
+                           " elements, but ", feed_fetches_moniker, " has ", feeds_fetches.size(), " elements.");
   }
 
-  for (size_t i = 0; i < feeds.size(); ++i) {
-    const auto& feed_name = feed_names[i];
+  for (size_t i = 0; i < feeds_fetches.size(); ++i) {
+    const auto& name = names[i];
 
-    auto iter = input_def_map_.find(feed_name);
-    if (input_def_map_.end() == iter) {
-      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Invalid Feed Input Name:", feed_name);
+    auto iter = input_output_meta_map.find(name);
+    if (input_output_meta_map.end() == iter) {
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Invalid ", input_output_moniker , " name: ", name);
+    }
+
+    auto& input_output_ml_value = feeds_fetches[i];
+
+    // For outputs the user may supply an unallocated placeholder.
+    if (!is_inputs && !input_output_ml_value.IsAllocated()) {
+      continue;
     }
 
     auto expected_type = iter->second.ml_data_type;
-    auto& input_ml_value = feeds[i];
-    if (input_ml_value.IsTensor()) {
+
+    if (input_output_ml_value.IsTensor()) {
       if (!expected_type->IsTensorType()
 #if !defined(DISABLE_OPTIONAL_TYPE)
           && !utils::IsOptionalTensor(expected_type)
 #endif
       ) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Input with name: ", feed_name,
+        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker , " with name: ", name,
                                " is not expected to be of type tensor.");
       }
 
@@ -1919,43 +1933,45 @@ common::Status InferenceSession::ValidateInputs(gsl::span<const std::string> fee
       auto expected_element_type = expected_type->AsTensorType()->GetElementType();
 #endif
 
-      auto input_element_type = input_ml_value.Get<Tensor>().DataType();
-      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_element_type, expected_element_type, "tensor"));
+      auto input_output_element_type = input_output_ml_value.Get<Tensor>().DataType();
+      // if (is_inputs || input_output_element_type != nullptr) {
+        ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_output_element_type, expected_element_type, "tensor", input_output_moniker));
+      //}
 
       // check for shape
       const auto& expected_shape = iter->second.tensor_shape;
       if (expected_shape.NumDimensions() > 0) {
-        const auto& input_shape = input_ml_value.Get<Tensor>().Shape();
-        ORT_RETURN_IF_ERROR_SESSIONID_(CheckShapes(feed_name, input_shape, expected_shape));
+        const auto& input_output_shape = input_output_ml_value.Get<Tensor>().Shape();
+        ORT_RETURN_IF_ERROR_SESSIONID_(CheckShapes(name, input_output_shape, expected_shape, input_output_moniker));
       }
-    } else if (input_ml_value.IsSparseTensor()) {
+    } else if (input_output_ml_value.IsSparseTensor()) {
 #if !defined(DISABLE_SPARSE_TENSORS)
       if (!expected_type->IsSparseTensorType()) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Input with name: ", feed_name,
+        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker, " with name: ", name,
                                " is not expected to be of type sparse tensor.");
       }
       auto expected_element_type = expected_type->AsSparseTensorType()->GetElementType();
-      const SparseTensor& sparse_tensor = input_ml_value.Get<SparseTensor>();
-      auto input_element_type = sparse_tensor.DataType();
-      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_element_type, expected_element_type, "sparse_tensor"));
+      const SparseTensor& sparse_tensor = input_output_ml_value.Get<SparseTensor>();
+      auto input_output_element_type = sparse_tensor.DataType();
+      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_output_element_type, expected_element_type, "sparse_tensor", input_output_moniker));
       // Check shape
       const auto& expected_shape = iter->second.tensor_shape;
       if (expected_shape.NumDimensions() > 0) {
-        const auto& input_shape = sparse_tensor.DenseShape();
-        ORT_RETURN_IF_ERROR_SESSIONID_(CheckShapes(feed_name, input_shape, expected_shape));
+        const auto& input_output_shape = sparse_tensor.DenseShape();
+        ORT_RETURN_IF_ERROR_SESSIONID_(CheckShapes(name, input_output_shape, expected_shape, input_output_moniker));
       }
 #else
-      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Input with name ", feed_name,
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker, " with name ", feed_name,
                              " is a sparse tensor, which is not supported in this build.");
 #endif
 
-    } else if (input_ml_value.IsTensorSequence()) {
+    } else if (input_output_ml_value.IsTensorSequence()) {
       if (!expected_type->IsTensorSequenceType()
 #if !defined(DISABLE_OPTIONAL_TYPE)
           && !utils::IsOptionalSeqTensor(expected_type)
 #endif
       ) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Input with name: ", feed_name,
+        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker , " with name: ", name,
                                " is not expected to be of type tensor sequence.");
       }
 
@@ -1969,15 +1985,21 @@ common::Status InferenceSession::ValidateInputs(gsl::span<const std::string> fee
       auto expected_element_type = expected_type->AsSequenceTensorType()->GetElementType();
 #endif
 
-      auto input_element_type = input_ml_value.Get<TensorSeq>().DataType();
-      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_element_type, expected_element_type, "seq"));
+      auto input_output_element_type = input_output_ml_value.Get<TensorSeq>().DataType();
+      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_output_element_type, expected_element_type, "seq", input_output_moniker));
     } else {
-      auto input_type = input_ml_value.Type();
-      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_type, expected_type, ""));
+      auto input_output_type = input_output_ml_value.Type();
+      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_output_type, expected_type, "", input_output_moniker));
     }
   }
 
   return Status::OK();
+}
+
+common::Status InferenceSession::ValidateInputs(gsl::span<const std::string> feed_names,
+                                                gsl::span<const OrtValue> feeds) const {
+  constexpr bool inputs_true = true;
+  return ValidateInputsOutputs(feed_names, feeds, inputs_true);
 }
 
 common::Status InferenceSession::ValidateOutputs(gsl::span<const std::string> output_names,
@@ -1990,22 +2012,26 @@ common::Status InferenceSession::ValidateOutputs(gsl::span<const std::string> ou
     return common::Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "At least one output should be requested.");
   }
 
-  if (!p_fetches->empty() && (output_names.size() != p_fetches->size())) {
+  const auto fetches = gsl::make_span(*p_fetches);
+
+  if (!fetches.empty() && (output_names.size() != fetches.size())) {
     std::ostringstream ostr;
     ostr << "Output vector incorrectly sized: output_names.size(): " << output_names.size()
-         << "p_fetches->size(): " << p_fetches->size();
+         << "p_fetches->size(): " << fetches.size();
     return common::Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, ostr.str());
   }
 
-  for (const auto& name : output_names) {
-    if (model_output_names_.find(name) == model_output_names_.end()) {
-      return common::Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "Invalid Output Name:" + name);
+  if (fetches.empty()) {
+    for (const auto& name : output_names) {
+      if (model_output_names_.find(name) == model_output_names_.end()) {
+        return common::Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "Invalid Output Name:" + name);
+      }
     }
+    return Status::OK();
   }
 
-  // TODO add more validation here like checking shape of the allocated buffers
-
-  return common::Status::OK();
+  constexpr bool inputs_false = false;
+  return ValidateInputsOutputs(output_names, fetches, inputs_false);
 }
 
 #ifdef ENABLE_TRAINING
@@ -2483,7 +2509,7 @@ std::pair<common::Status, const OutputDefList*> InferenceSession::GetModelOutput
     }
   }
 
-  return std::make_pair(common::Status::OK(), &output_def_list_);
+  return std::make_pair(common::Status::OK(), &model_->MainGraph().GetOutputs());
 }
 
 common::Status InferenceSession::NewIOBinding(std::unique_ptr<IOBinding>* io_binding) {
@@ -2702,15 +2728,15 @@ common::Status InferenceSession::SaveModelMetadata(const onnxruntime::Model& mod
     required_inputs_.insert(input->Name());
   }
 
-  auto add_inputs = [this](const InputDefList& inputs) {
-    input_def_map_.clear();
-    input_def_map_.reserve(inputs.size());
-    for (auto elem : inputs) {
+  auto add_inputs_outputs = [](const InputDefList& inputs_outputs, InputOutputDefMetaMap& map) {
+    map.clear();
+    map.reserve(inputs_outputs.size());
+    for (auto elem : inputs_outputs) {
       auto elem_type = utils::GetMLDataType(*elem);
       auto elem_shape_proto = elem->Shape();
-      input_def_map_.insert(
+      map.insert(
           {elem->Name(),
-           InputDefMetaData(
+           InputOutputDefMetaData(
                elem, elem_type,
                elem_shape_proto ? utils::GetTensorShapeFromTensorShapeProto(*elem_shape_proto) : TensorShape())});
     }
@@ -2719,16 +2745,16 @@ common::Status InferenceSession::SaveModelMetadata(const onnxruntime::Model& mod
   if (graph.CanOverrideInitializer()) {
     // for IR 4 or higher it is optional to have a matching graph input for an initializer, and if one exists the
     // initializer is explicitly overridable.
-    add_inputs(graph.GetInputsIncludingInitializers());
+    add_inputs_outputs(graph.GetInputsIncludingInitializers(), input_def_map_);
   } else {
     // for IR < 4 we don't allow overriding initializers so that they can be treated as constant. exclude them from
     // the list of valid inputs by just using the GetInputs() list.
-    add_inputs(graph.GetInputs());
+    add_inputs_outputs(graph.GetInputs(), input_def_map_);
   }
 
   // save outputs
   const auto& outputs = graph.GetOutputs();
-  output_def_list_ = outputs;  // A direct copy of outputs
+  add_inputs_outputs(outputs, output_def_map_);
 
   model_output_names_.clear();
   model_output_names_.reserve(outputs.size());
