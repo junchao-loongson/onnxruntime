@@ -639,7 +639,6 @@ class InferenceSession {
   [[nodiscard]] common::Status ValidateInputsOutputs(gsl::span<const std::string> feed_fetches_names,
                                                      gsl::span<const OrtValue> feeds_fetches, bool is_inputs) const;
 
-
   [[nodiscard]] common::Status WaitForNotification(Notification* p_executor_done, int64_t timeout_in_ms);
 
   template <typename T>

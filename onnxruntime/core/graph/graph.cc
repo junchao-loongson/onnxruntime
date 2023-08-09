@@ -161,16 +161,6 @@ static void RemoveInvalidValues(ONNX_NAMESPACE::TypeProto& type) {
   }
 }
 
-static TypeProto TypeProtoFromTensorProto(const TensorProto& tensor) {
-  TypeProto t;
-  t.mutable_tensor_type()->set_elem_type(tensor.data_type());
-  auto shape = t.mutable_tensor_type()->mutable_shape();
-  for (auto dim : tensor.dims())
-    shape->add_dim()->set_dim_value(dim);
-
-  return t;
-}
-
 static std::string GenerateSchemaKey(const IndexedSubGraph& subgraph_ptr) {
   return MakeString(subgraph_ptr.GetMetaDef()->domain, "_",
                     subgraph_ptr.GetMetaDef()->name, "_",
@@ -1173,6 +1163,11 @@ Graph::Graph(const Model& owning_model,
 
   // Process 'Constant' nodes
   // Put the 'TensorProto' stored in the 'Constant' nodes attribute into the graphs initializer list
+#if !defined(DISABLE_SPARSE_TENSORS)
+  // Memorize sparse constant nodes.
+  InlinedVector<const ONNX_NAMESPACE::NodeProto*> sparse_constant_nodes;
+#endif
+
   for (auto& node : graph_proto_->node()) {
     if (node.op_type() != kConstant) {
       continue;
@@ -1183,7 +1178,7 @@ Graph::Graph(const Model& owning_model,
     ORT_ENFORCE(status.IsOK(), status.ToString());
     // Ensure initializers are also graph inputs.
     if (ir_version_ < 4) {
-      TypeProto t{TypeProtoFromTensorProto(*tensor)};
+      TypeProto t{utils::TypeProtoFromTensorProto(*tensor)};
       const NodeArg& node_arg = GetOrCreateNodeArg(tensor->name(), &t);
       *(graph_proto_->add_input()) = node_arg.ToProto();
     }
@@ -1259,12 +1254,12 @@ Graph::Graph(const Model& owning_model,
       p.first->second = &tensor;
     }
 
-    NodeArg* matching_graph_input = GetNodeArg(tensor.name());
-    TypeProto t{TypeProtoFromTensorProto(tensor)};
-
+    TypeProto t{utils::TypeProtoFromTensorProto(tensor)};
     if (!utils::HasElemType(t.tensor_type())) {
       ORT_THROW("This is an invalid model. Tensor does not have type information.");
     }
+
+    NodeArg* matching_graph_input = GetNodeArg(tensor.name());
 
     if (ir_version_ < 4) {
       // initializers can have matching graph inputs but are treated as constant,
@@ -1310,6 +1305,35 @@ Graph::Graph(const Model& owning_model,
   for (const auto& node_proto : graph_proto_->node()) {
     AddNode(node_proto, name_to_type_map);
   }
+
+  // We now process sparse initializers or constant nodes. We do that here
+  // because some of the sparse initializers are stored sparse to save on space.
+  // And we need to convert some of them to dense, others we want to stay sparse.
+  // For that we need to consult inputs/outputs and individual nodes inputs where
+  // sparse initializers may be consumed.
+#if !defined(DISABLE_SPARSE_TENSORS)
+  for (auto& node : graph_proto_->node()) {
+    if (node.op_type() != kConstant) {
+      continue;
+    }
+
+    const gsl::not_null<TensorProto*> tensor{graph_proto_->add_initializer()};
+    auto status = utils::ConstantNodeProtoToTensorProto(node, model_path, *tensor);
+    ORT_ENFORCE(status.IsOK(), status.ToString());
+    // Ensure initializers are also graph inputs.
+    if (ir_version_ < 4) {
+      TypeProto t{utils::TypeProtoFromTensorProto(*tensor)};
+      const NodeArg& node_arg = GetOrCreateNodeArg(tensor->name(), &t);
+      *(graph_proto_->add_input()) = node_arg.ToProto();
+    }
+
+    if (node.attribute(0).type() == AttributeProto_AttributeType_SPARSE_TENSOR) {
+      auto p = sparse_tensor_names_.emplace(tensor->name());
+      ORT_ENFORCE(p.second, "Duplicate constant node sparse initializer name: '", tensor->name(), "' Model is invalid.");
+    }
+  }
+
+ #endif
 
   if (is_loaded_from_model_file_) {
     InitializeStateFromModelFileGraphProto();
@@ -3110,7 +3134,6 @@ common::Status Graph::SaveToOrtFormat(flatbuffers::FlatBufferBuilder& builder,
   std::vector<flatbuffers::Offset<fbs::SparseTensor>> sparse_initializers_data;
   sparse_initializers_data.reserve(sparse_tensor_names_.size());
 #endif
-  const auto sparse_end = sparse_tensor_names_.end();
 
   std::vector<flatbuffers::Offset<fbs::Tensor>> initializers_data;
 #if !defined(DISABLE_SPARSE_TENSORS)
@@ -3122,7 +3145,7 @@ common::Status Graph::SaveToOrtFormat(flatbuffers::FlatBufferBuilder& builder,
   const auto& model_path = ModelPath();
 
   for (const auto& pair : name_to_initial_tensor_) {
-    if (sparse_tensor_names_.find(pair.first) == sparse_end) {
+    if (!IsSparseInitializer(pair.first)) {
       flatbuffers::Offset<fbs::Tensor> fbs_tensor;
       ORT_RETURN_IF_ERROR(
           fbs::utils::SaveInitializerOrtFormat(builder, *pair.second, model_path, fbs_tensor));

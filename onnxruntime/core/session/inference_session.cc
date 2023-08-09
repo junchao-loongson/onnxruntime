@@ -1885,7 +1885,6 @@ static common::Status CheckTypes(MLDataType actual, MLDataType expected, const s
 
 common::Status InferenceSession::ValidateInputsOutputs(gsl::span<const std::string> names,
                                                        gsl::span<const OrtValue> feeds_fetches, bool is_inputs) const {
-
   const char* const input_output_moniker = is_inputs ? "Input" : "Output";
   const char* const feed_fetches_moniker = is_inputs ? "Feed" : "Fetch";
   const InputOutputDefMetaMap& input_output_meta_map = is_inputs ? input_def_map_ : output_def_map_;
@@ -1900,7 +1899,7 @@ common::Status InferenceSession::ValidateInputsOutputs(gsl::span<const std::stri
 
     auto iter = input_output_meta_map.find(name);
     if (input_output_meta_map.end() == iter) {
-      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Invalid ", input_output_moniker , " name: ", name);
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "Invalid ", input_output_moniker, " name: ", name);
     }
 
     auto& input_output_ml_value = feeds_fetches[i];
@@ -1918,7 +1917,7 @@ common::Status InferenceSession::ValidateInputsOutputs(gsl::span<const std::stri
           && !utils::IsOptionalTensor(expected_type)
 #endif
       ) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker , " with name: ", name,
+        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker, " with name: ", name,
                                " is not expected to be of type tensor.");
       }
 
@@ -1935,7 +1934,7 @@ common::Status InferenceSession::ValidateInputsOutputs(gsl::span<const std::stri
 
       auto input_output_element_type = input_output_ml_value.Get<Tensor>().DataType();
       // if (is_inputs || input_output_element_type != nullptr) {
-        ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_output_element_type, expected_element_type, "tensor", input_output_moniker));
+      ORT_RETURN_IF_ERROR_SESSIONID_(CheckTypes(input_output_element_type, expected_element_type, "tensor", input_output_moniker));
       //}
 
       // check for shape
@@ -1971,7 +1970,7 @@ common::Status InferenceSession::ValidateInputsOutputs(gsl::span<const std::stri
           && !utils::IsOptionalSeqTensor(expected_type)
 #endif
       ) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker , " with name: ", name,
+        return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, input_output_moniker, " with name: ", name,
                                " is not expected to be of type tensor sequence.");
       }
 

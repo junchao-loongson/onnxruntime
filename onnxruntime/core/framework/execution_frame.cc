@@ -265,7 +265,6 @@ void IExecutionFrame::Init(gsl::span<const int> feed_mlvalue_idxs, gsl::span<con
     if (IsOutput(ort_value_index)) {
       std::string name;
       ORT_THROW_IF_ERROR(ort_value_idx_map_.GetName(ort_value_index, name));
-      const Tensor& src = entry.second.Get<Tensor>();  // all initializers in ONNX are tensors
       OrtValue& dest = all_values_[ort_value_index];
 
 #if !defined(DISABLE_SPARSE_TENSORS)
@@ -277,16 +276,27 @@ void IExecutionFrame::Init(gsl::span<const int> feed_mlvalue_idxs, gsl::span<con
           dest.Init(p_tensor.release(), ml_tensor, ml_tensor->GetDeleteFunc());
         }
 
-        // Outputting Coo format because initializers are Constant nodes, and they are converted to dense.
-        AllocatorPtr allocator = GetAllocator(src.Location().device);
-        constexpr bool has_linear_coo_index = true;
-        ORT_THROW_IF_ERROR(sparse_utils::DenseTensorToSparseCoo(GetDataTransferManager(), src,
-                                                                cpu_allocator, allocator, has_linear_coo_index,
-                                                                *dest.GetMutable<SparseTensor>()));
+        // Outputting Coo format because initializers are Constant nodes. Some of them are stored in the model
+        // as sparse to save on space, but converted to dense on load.
+        // Other initializers we prefer to keep sparse if inputs/outputs or nodes actually require them sparse
+        if (entry.second.IsTensor()) {
+          const Tensor& src = entry.second.Get<Tensor>();
+          AllocatorPtr allocator = GetAllocator(src.Location().device);
+          constexpr bool has_linear_coo_index = true;
+          ORT_THROW_IF_ERROR(sparse_utils::DenseTensorToSparseCoo(GetDataTransferManager(), src,
+                                                                  cpu_allocator, allocator, has_linear_coo_index,
+                                                                  *dest.GetMutable<SparseTensor>()));
+        } else if (entry.second.IsSparseTensor()) {
+          const SparseTensor& src = SparseTensor::GetSparseTensorFromOrtValue(entry.second);
+          SparseTensor& sparse_dest = SparseTensor::GetSparseTensorFromOrtValue(dest);
+          AllocatorPtr allocator = GetAllocator(src.Location().device);
+          ORT_THROW_IF_ERROR(src.Copy(GetDataTransferManager(), sparse_dest));
+        }
       } else {
 #else
       ORT_UNUSED_PARAMETER(is_initializer_sparse_func);
 #endif  //  !defined(DISABLE_SPARSE_TENSORS)
+        const Tensor& src = entry.second.Get<Tensor>();
         if (!dest.IsAllocated()) {
           // NOTE: This doesn't need to support ExecutionFrame custom allocators as they only come into play
           // for a subgraph with an output of unknown shape that needs to be accumulated by the control-flow node.

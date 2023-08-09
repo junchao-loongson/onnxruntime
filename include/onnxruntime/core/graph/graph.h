@@ -1573,9 +1573,14 @@ class Graph {
 
   InitializedTensorSet name_to_initial_tensor_;
 
-  std::unordered_set<std::reference_wrapper<const std::string>,
-                     std::hash<std::string>, std::equal_to<std::string>>
-      sparse_tensor_names_;
+  // Contains all the names of the sparse initializers (or constant nodes) that were sparse in the original model
+  // loaded. However, some of them may have been sparse to save space, and they would need to be converted
+  // to dense for consumption.
+  InlinedHashSet<std::string> sparse_tensor_names_;
+
+  // This is a subset of sparse_tensor_names_. These represent sparse initializers that have to stay
+  // sparse because are consumed as sparse.
+  InlinedHashMap<std::string_view, const ONNX_NAMESPACE::SparseTensorProto*> name_to_initial_sparse_tensor_;
 
 #if !defined(ORT_MINIMAL_BUILD) || defined(ORT_EXTENDED_MINIMAL_BUILD)
   // Runtime optimization storage.

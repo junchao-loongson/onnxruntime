@@ -67,6 +67,18 @@ common::Status TensorProtoToTensor(const Env& env, const ORTCHAR_T* model_path,
  */
 ONNX_NAMESPACE::TensorProto TensorToTensorProto(const Tensor& tensor, const std::string& tensor_proto_name);
 
+/** Creates a TypeProto from a TensorProto.
+    @param[in] TensorProto whose type and shape will be used to create the TypeProto.
+    @return the TypeProto.
+ */
+ONNX_NAMESPACE::TypeProto TypeProtoFromTensorProto(const ONNX_NAMESPACE::TensorProto& tensor);
+
+/** Creates a TypeProto from a SparseTensorProto.
+    @param[in] SparseTensorProto whose type and shape will be used to create the TypeProto.
+    @return the TypeProto.
+ */
+ONNX_NAMESPACE::TypeProto TypeProtoFromSparseTensorProto(const ONNX_NAMESPACE::SparseTensorProto& tensor);
+
 ONNXTensorElementDataType CApiElementTypeFromProtoType(int type);
 ONNXTensorElementDataType GetTensorElementType(const ONNX_NAMESPACE::TensorProto& tensor_proto);
 

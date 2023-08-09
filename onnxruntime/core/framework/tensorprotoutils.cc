@@ -1005,6 +1005,27 @@ ONNX_NAMESPACE::TensorProto TensorToTensorProto(const Tensor& tensor, const std:
   return tensor_proto;
 }
 
+ONNX_NAMESPACE::TypeProto TypeProtoFromTensorProto(const ONNX_NAMESPACE::TensorProto& tensor) {
+  TypeProto t;
+  t.mutable_tensor_type()->set_elem_type(tensor.data_type());
+  auto* shape = t.mutable_tensor_type()->mutable_shape();
+  for (auto dim : tensor.dims())
+    shape->add_dim()->set_dim_value(dim);
+
+  return t;
+}
+
+ONNX_NAMESPACE::TypeProto TypeProtoFromSparseTensorProto(const ONNX_NAMESPACE::SparseTensorProto& tensor) {
+  TypeProto t;
+  auto& mutable_type = *(t.mutable_sparse_tensor_type());
+  mutable_type.set_elem_type(tensor.values().data_type());
+  auto* shape = mutable_type.mutable_shape();
+  for (auto dim : tensor.dims())
+    shape->add_dim()->set_dim_value(dim);
+
+  return t;
+}
+
 common::Status ConstantNodeProtoToTensorProto(const ONNX_NAMESPACE::NodeProto& node,
                                               const Path& model_path,
                                               ONNX_NAMESPACE::TensorProto& tensor, const std::string& tensor_name) {
@@ -1071,6 +1092,7 @@ common::Status ConstantNodeProtoToTensorProto(const ONNX_NAMESPACE::NodeProto& n
 }
 
 #if !defined(DISABLE_SPARSE_TENSORS)
+
 static Status CopySparseData(size_t n_sparse_elements,
                              const ONNX_NAMESPACE::TensorProto& indices,
                              const Path& model_path,
