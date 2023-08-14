@@ -300,10 +300,17 @@ void IterateSubgraphFromNode(Graph& graph,
         candidate_outputs.insert(cur);
         continue;
       }
-    } else if (graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "LayerNormalization", {1, 17}, kOnnxDomain)) {
+    } else if (graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "LayerNormalization", {1, 17}, kOnnxDomain) ||
+               graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "SimplifiedLayerNormalization", {1}, kOnnxDomain)) {
       if (subgraph.find(cur->MutableInputDefs()[0]) == subgraph.end()) {
         LOG_DEBUG_INFO(logger, "PaddingElimination::First input of Normalization: " + cur->Name() +
                                    " is not in subgraph.");
+        candidate_outputs.insert(cur);
+        continue;
+      }
+      if (!cur->InputDefs()[0]->Shape()) {
+        LOG_DEBUG_INFO(logger, "PaddingElimination::First input of Normalization: " + cur->Name() +
+                                   " has no shape.");
         candidate_outputs.insert(cur);
         continue;
       }
@@ -322,7 +329,8 @@ void IterateSubgraphFromNode(Graph& graph,
       subgraph.insert(cur->MutableOutputDefs()[0]);
       subgraph.insert(cur->MutableOutputDefs()[1]);
       PushAllOutputNode(graph, to_visit, cur, visited);
-    } else if (graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "Cast", {9, 13})) {
+    } else if (graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "Cast", {9, 13}) ||
+               graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "Gelu", {1}, kMSDomain)) {
       ORT_ENFORCE(subgraph.find(cur->MutableInputDefs()[0]) != subgraph.end());
       subgraph.insert(cur->MutableOutputDefs()[0]);
       PushAllOutputNode(graph, to_visit, cur, visited);
@@ -361,6 +369,30 @@ void IterateSubgraphFromNode(Graph& graph,
       } else {
         candidate_outputs.insert(cur);
       }
+    } else if (graph_utils::IsSupportedOptypeVersionAndDomain(*cur, "ReduceMean", {1, 11, 13, 18})) {
+      if (cur->InputDefs()[0]->Shape()) {
+        auto axes = cur->GetAttributes().at("axes").ints();
+        bool axes_check = (axes.size() > 0);
+        for (int64_t axis : axes) {
+            axis = axis < 0 ? axis + cur->InputDefs()[0]->Shape()->dim_size() : axis;
+            if (axis < 2) {
+              LOG_DEBUG_INFO(logger, "PaddingElimination::axis of ReduceMean: " + cur->Name() + " is " +
+                                        std::to_string(axis) + ", which blocks merging leading two dims.");
+              candidate_outputs.insert(cur);
+              axes_check = false;
+              break;
+            }
+        }
+        if (axes_check) {
+          LOG_DEBUG_INFO(logger, "PaddingElimination::ReduceMean: " + cur->Name() + " is added to subgraph.");
+          subgraph.insert(cur->MutableOutputDefs()[0]);
+          PushAllOutputNode(graph, to_visit, cur, visited);
+        }
+      } else {
+        LOG_DEBUG_INFO(logger, "PaddingElimination::shape of input of ReduceMean: " + cur->Name() + " is unknown.");
+        candidate_outputs.insert(cur);
+        continue;
+      }
     } else {
       candidate_outputs.insert(cur);
     }
@@ -393,6 +425,7 @@ Status PaddingElimination::ApplyImpl(Graph& graph, bool& modified, int graph_lev
   int64_t handled_output_count = 0;
   int64_t expanded_input_count = 0;
 
+  NodeArg* invalid_value_node_arg = nullptr;
   // Find the valid embedding node
   for (auto node_index : node_topology_list) {
     auto& node = *graph.GetNode(node_index);
@@ -428,8 +461,34 @@ Status PaddingElimination::ApplyImpl(Graph& graph, bool& modified, int graph_lev
         for (auto output_defs : embedding_node->MutableOutputDefs()) {
           subgraph.insert(output_defs);
         }
+        invalid_value_node_arg = embedding_node->MutableInputDefs()[2];
         break;
       }
+    } else if (graph_utils::IsSupportedOptypeVersionAndDomain(node, "Gather", {1, 11, 13})) {
+      if (std::find(sparse_embedding_input_names_.begin(), sparse_embedding_input_names_.end(),
+                    node.InputDefs()[1]->Name()) == sparse_embedding_input_names_.end()) {
+        LOG_DEBUG_INFO(logger, "Skip node " + node.Name() + "(" + node.OpType() +
+                                   ") due to embedding input [" + node.InputDefs()[1]->Name() +
+                                   "] is not in the sparse embedding input list.");
+        continue;
+      }
+
+      embedding_node = &node;
+      input_ids_arg = embedding_node->MutableInputDefs()[1];
+      for (auto output_defs : embedding_node->MutableOutputDefs()) {
+        subgraph.insert(output_defs);
+      }
+
+      const ONNX_NAMESPACE::TypeProto* index_input_type = input_ids_arg->TypeAsProto();
+      int elem_type = index_input_type->tensor_type().elem_type();
+      ONNX_NAMESPACE::TensorProto const_tensor;
+      const_tensor.set_name(graph.GenerateNodeArgName("0"));
+      const_tensor.set_data_type(elem_type);
+      static const InlinedVector<int64_t> dims = {};
+      InlinedVector<int64_t> values{1};  // hard code padding index to be 0
+      const_tensor.set_raw_data(values.data(), values.size() * sizeof(int64_t));
+      invalid_value_node_arg = &graph_utils::AddInitializer(graph, const_tensor);
+      break;
     }
   }
 
@@ -484,7 +543,13 @@ Status PaddingElimination::ApplyImpl(Graph& graph, bool& modified, int graph_lev
   reshape_node.SetExecutionProviderType(embedding_node->GetExecutionProviderType());
 
   NodeArg* squeeze_out_arg = InsertNodesForValidIndices(
-      graph, reshape_output_args[0], embedding_node->MutableInputDefs()[2], embedding_node->GetExecutionProviderType());
+      graph, reshape_output_args[0], invalid_value_node_arg, embedding_node->GetExecutionProviderType());
+
+  // Get the first two dims value of input_ids which is [batch_size, seq_len]
+  NodeArg* first_two_dims_arg = GetDimsValue(graph,
+                                             input_ids_arg,
+                                             CreateInitializerFromVector(graph, {2}, {0, 1}, graph.GenerateNodeArgName("first_two_indices")),
+                                             *embedding_node);
 
   // Get the first two dims value of input_ids which is [batch_size, seq_len]
   NodeArg* first_two_dims_arg = GetDimsValue(graph,
