@@ -1809,6 +1809,15 @@ def run_onnxruntime_tests(args, source_dir, ctest_path, build_dir, configs):
                 onnx_test = False
 
             if onnx_test:
+                if not args.skip_onnx_tests:
+                    cmd = []
+                    # Enable multi device test on cuda/tensorrt ep
+                    if args.use_cuda and args.enable_multi_device_test:
+                        # Added logic to append -d 1 to cmd if enable_multi_device_test is True
+                        cmd += ['-d', '1']
+                        log.info("Enable multi_device onnx tests. onnx_test_runner will be executed on GPU=1")
+                    run_subprocess([os.path.join(cwd, "onnx_test_runner")] + cmd + ["test_models"], cwd=cwd)
+
                 # Disable python onnx tests for TensorRT and CANN EP, because many tests are
                 # not supported yet.
                 if args.use_tensorrt or args.use_cann:
@@ -1853,10 +1862,8 @@ def run_onnxruntime_tests(args, source_dir, ctest_path, build_dir, configs):
                     cwd=cwd,
                 )
 
-                if not args.skip_onnx_tests:
-                    run_subprocess([os.path.join(cwd, "onnx_test_runner"), "test_models"], cwd=cwd)
-                    if config != "Debug":
-                        run_subprocess([sys.executable, "onnx_backend_test_series.py"], cwd=cwd, dll_path=dll_path)
+                if not args.skip_onnx_tests and config != "Debug":
+                    run_subprocess([sys.executable, "onnx_backend_test_series.py"], cwd=cwd, dll_path=dll_path)
 
             if not args.skip_keras_test:
                 try:
