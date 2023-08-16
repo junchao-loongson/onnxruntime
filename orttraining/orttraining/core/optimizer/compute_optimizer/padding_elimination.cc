@@ -374,14 +374,14 @@ void IterateSubgraphFromNode(Graph& graph,
         auto axes = cur->GetAttributes().at("axes").ints();
         bool axes_check = (axes.size() > 0);
         for (int64_t axis : axes) {
-            axis = axis < 0 ? axis + cur->InputDefs()[0]->Shape()->dim_size() : axis;
-            if (axis < 2) {
-              LOG_DEBUG_INFO(logger, "PaddingElimination::axis of ReduceMean: " + cur->Name() + " is " +
-                                        std::to_string(axis) + ", which blocks merging leading two dims.");
-              candidate_outputs.insert(cur);
-              axes_check = false;
-              break;
-            }
+          axis = axis < 0 ? axis + cur->InputDefs()[0]->Shape()->dim_size() : axis;
+          if (axis < 2) {
+            LOG_DEBUG_INFO(logger, "PaddingElimination::axis of ReduceMean: " + cur->Name() + " is " +
+                                       std::to_string(axis) + ", which blocks merging leading two dims.");
+            candidate_outputs.insert(cur);
+            axes_check = false;
+            break;
+          }
         }
         if (axes_check) {
           LOG_DEBUG_INFO(logger, "PaddingElimination::ReduceMean: " + cur->Name() + " is added to subgraph.");
@@ -544,12 +544,6 @@ Status PaddingElimination::ApplyImpl(Graph& graph, bool& modified, int graph_lev
 
   NodeArg* squeeze_out_arg = InsertNodesForValidIndices(
       graph, reshape_output_args[0], invalid_value_node_arg, embedding_node->GetExecutionProviderType());
-
-  // Get the first two dims value of input_ids which is [batch_size, seq_len]
-  NodeArg* first_two_dims_arg = GetDimsValue(graph,
-                                             input_ids_arg,
-                                             CreateInitializerFromVector(graph, {2}, {0, 1}, graph.GenerateNodeArgName("first_two_indices")),
-                                             *embedding_node);
 
   // Get the first two dims value of input_ids which is [batch_size, seq_len]
   NodeArg* first_two_dims_arg = GetDimsValue(graph,
