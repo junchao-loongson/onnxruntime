@@ -88,4 +88,4 @@ jobs:
       displayName: 'Publish Test Binaries'
       inputs:
         artifactName: 'drop-linux-cpu-${{ parameters.arch }}'
-        targetPath: '$(Build.BinariesDirectory)/Release'
+        targetPath: '$(Build.BinariesDirectory)/Debug'
