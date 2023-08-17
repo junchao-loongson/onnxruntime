@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e -x
 mkdir -p /build/dist
-CFLAGS="-Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fstack-protector-strong -O3 -pipe -Wl,--strip-all"
-CXXFLAGS="-Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fstack-protector-strong -O3 -pipe -Wl,--strip-all"
+CFLAGS="-ggdb3"
+CXXFLAGS="-ggdb3"
 
 
 BUILD_DEVICE="CPU"
-BUILD_CONFIG="Release"
+BUILD_CONFIG="Debug"
 EXTRA_ARG=""
 
 PYTHON_EXES=("/opt/python/cp38-cp38/bin/python3.8" "/opt/python/cp39-cp39/bin/python3.9" "/opt/python/cp310-cp310/bin/python3.10" "/opt/python/cp311-cp311/bin/python3.11")

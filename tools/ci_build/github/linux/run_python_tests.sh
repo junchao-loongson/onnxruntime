@@ -5,7 +5,7 @@
 set -e -x
 
 BUILD_DEVICE="CPU"
-BUILD_CONFIG="Release"
+BUILD_CONFIG="Debug"
 while getopts "d:" parameter_Option
 do case "${parameter_Option}"
 in
@@ -43,5 +43,7 @@ python3 -m pip install --find-links $BUILD_BINARIESDIRECTORY/whl $PYTHON_PACKAGE
 ln -s /data/models $BUILD_BINARIESDIRECTORY
 cd $BUILD_BINARIESDIRECTORY/$BUILD_CONFIG
 # Restore file permissions
-xargs -a $BUILD_BINARIESDIRECTORY/$BUILD_CONFIG/perms.txt chmod a+x
-python3 $BUILD_SOURCESDIRECTORY/tools/ci_build/build.py $BUILD_ARGS --ctest_path ''
+xargs -a perms.txt chmod a+x
+sudo apt-get install -y valgrind
+valgrind /usr/bin/python3 onnxruntime_test_python.py
+
