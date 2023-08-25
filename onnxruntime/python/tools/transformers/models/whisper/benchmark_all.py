@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import subprocess
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import librosa
 import torch
@@ -257,6 +259,7 @@ def save_results(results, filename):
 def benchmark(args, benchmark_cmd, engine, audio_file, duration):
     log_filename = f"{engine}_{datetime.datetime.now():%Y-%m-%d_%H:%M:%S}.log"
     log_path = os.path.join(args.log_folder, log_filename)
+    print(log_path)
     with open(log_path, "w") as log_file:
         process = subprocess.Popen(benchmark_cmd, stdout=log_file, stderr=log_file)
         try:
@@ -309,8 +312,7 @@ def main():
         # Benchmark PyTorch without torch.compile
         benchmark_cmd = [  # noqa: RUF005
             "python3",
-            "-m",
-            "models.whisper.benchmark",
+            "benchmark.py",
             "--audio-path",
             audio_path,
             "--benchmark-type",
@@ -332,13 +334,13 @@ def main():
         ] + hf_decoder_input_ids_cmd
         logger.info("Benchmark PyTorch without torch.compile")
         results = benchmark(args, benchmark_cmd, "pytorch", audio_file, duration)
+        print(results)
         all_results.extend(results)
 
         # Benchmark PyTorch with torch.compile
         benchmark_cmd = [  # noqa: RUF005
             "python3",
-            "-m",
-            "models.whisper.benchmark",
+            "benchmark.py",
             "--audio-path",
             audio_path,
             "--benchmark-type",
@@ -366,8 +368,7 @@ def main():
         if args.hf_ort_model_path:
             benchmark_cmd = [  # noqa: RUF005
                 "python3",
-                "-m",
-                "models.whisper.benchmark",
+                "benchmark.py",
                 "--audio-path",
                 audio_path,
                 "--benchmark-type",
@@ -397,8 +398,7 @@ def main():
         if args.ort_model_path:
             benchmark_cmd = [  # noqa: RUF005
                 "python3",
-                "-m",
-                "models.whisper.benchmark",
+                "benchmark.py",
                 "--audio-path",
                 audio_path,
                 "--benchmark-type",
