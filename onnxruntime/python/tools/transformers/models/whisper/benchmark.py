@@ -12,6 +12,8 @@ import psutil
 import torch
 import whisper
 
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+
 from benchmark_helper import setup_logger, measure_memory
 from onnxruntime_extensions import get_library_path
 from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
