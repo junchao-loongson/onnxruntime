@@ -192,6 +192,35 @@ namespace Microsoft.ML.OnnxRuntime
             throw new ArgumentException("Expected the property type to be one of long, float or string. Unknown type retrieved " + propertyValue.ToString());
         }
 
+        public void UpdateParameter(string parameterName, OrtValue parameter)
+        {
+            if (bufparameterfer.OnnxValueType != OnnxValueType.ONNX_TYPE_TENSOR)
+            {
+                throw new ArgumentException("Incorrect buffer received. Expected a tensor parameter.");
+            }
+
+            var parameterNameUtf8 = NativeOnnxValueHelper.StringToZeroTerminatedUtf8(parameterName);
+            NativeApiStatus.VerifySuccess(NativeTrainingMethods.OrtUpdateParameter(handle, parameterNameUtf8, parameter.Handle));
+        }
+
+        public OrtValue GetParameter(string parameterName)
+        {
+            var parameterNameUtf8 = NativeOnnxValueHelper.StringToZeroTerminatedUtf8(parameterName);
+
+            IntPtr typeAndShapeInfoHandle = IntPtr.Zero;
+            NativeApiStatus.VerifySuccess(NativeTrainingMethods.OrtGetParametersSize(_nativeHandle, parameterNameUtf8, out typeAndShapeInfoHandle));
+
+            using (var typeAndShapeInfo = new TensorTypeAndShapeInfo(typeAndShapeInfoHandle))
+            {
+                var allocator = OrtAllocator.DefaultInstance;
+                var parameter = OrtValue.CreateAllocatedTensorValue(allocator, typeAndShapeInfo.ElementType, typeAndShapeInfo.Shape);
+
+                NativeApiStatus.VerifySuccess(NativeTrainingMethods.OrtGetParameter(_nativeHandle, parameterNameUtf8, parameter.Handle));
+            }
+
+            return parameter;
+        }
+
 #region SafeHandle
         /// <summary>
         /// Overrides SafeHandle.ReleaseHandle() to properly dispose of

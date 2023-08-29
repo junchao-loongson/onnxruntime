@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 from onnxruntime.capi import _pybind_state as C
 
 
@@ -52,7 +53,7 @@ class CheckpointState:
         """
         C.save_checkpoint(state._state, os.fspath(checkpoint_uri), include_optimizer_state)
 
-    def __getitem__(self, name: str) -> int | float | str:
+    def __getitem__(self, name: str) -> int | float | str | np.ndarray:
         """Gets the property associated with the given name
 
         Args:
@@ -61,16 +62,22 @@ class CheckpointState:
         Returns:
             The value of the property
         """
-        return self._state.get_property(name)
+        if self._state.has_property(name):
+            return self._state.get_property(name)
+        elif self._state.has_parameter(name):
+            return self._state.get_parameter_data(name)
 
-    def __setitem__(self, name: str, value: int | float | str) -> None:
+    def __setitem__(self, name: str, value: int | float | str | np.ndarray) -> None:
         """Sets the property value for the given name
 
         Args:
             name: The name of the property
             value: The value of the property
         """
-        self._state.add_property(name, value)
+        if self._state.has_property(name):
+            self._state.add_property(name, value)
+        elif self._state.has_parameter(name):
+            self._state.update_parameter_data(name, value)
 
     def __contains__(self, name: str) -> bool:
         """Checks if the property exists in the state
@@ -81,4 +88,4 @@ class CheckpointState:
         Returns:
             True if the property exists, False otherwise
         """
-        return self._state.has_property(name)
+        return self._state.has_property(name) or self._state.has_parameter(name)

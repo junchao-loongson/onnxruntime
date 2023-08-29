@@ -563,3 +563,32 @@ def test_eval_step_with_ort_values():
         fetches = model(inputs, labels)
         assert isinstance(fetches, OrtValue)
         assert fetches
+
+
+def test_get_parameter_values():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (
+            checkpoint_file_path,
+            training_model_file_path,
+            eval_model_file_path,
+            _,
+            _,
+        ) = _create_training_artifacts(temp_dir)
+
+        # Create Checkpoint State.
+        state = CheckpointState.load_checkpoint(checkpoint_file_path)
+
+        # Create a Module.
+        model = Module(training_model_file_path, state, eval_model_file_path, device="cuda")
+
+        param = state["fc1.weight"].numpy()
+        param = np.ones_like(param, dtype=np.float32)
+        state["fc1.weight"] = OrtValue.ortvalue_from_numpy(param)._ortvalue
+        # print(state["fc1.weight"].numpy())
+        assert np.allclose(state["fc1.weight"].numpy(), param)
+
+        model.train()
+        inputs = torch.randn(64, 784).numpy()
+        labels = torch.randint(high=10, size=(64,), dtype=torch.int64).numpy()
+        loss = model(inputs, labels)
+        print(loss)
