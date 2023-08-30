@@ -100,7 +100,7 @@ namespace Microsoft.ML.OnnxRuntime
                     OrtGetEvalModelInputName = (DOrtGetEvalModelInputName)Marshal.GetDelegateForFunctionPointer(trainingApi_.TrainingSessionGetEvalModelInputName, typeof(DOrtGetEvalModelInputName));
                     OrtAddProperty = (DOrtAddProperty)Marshal.GetDelegateForFunctionPointer(trainingApi_.AddProperty, typeof(DOrtAddProperty));
                     OrtGetProperty = (DOrtGetProperty)Marshal.GetDelegateForFunctionPointer(trainingApi_.GetProperty, typeof(DOrtGetProperty));
-                    OrtGetParameterTypeAndShape = (DOrtGetParameterTypeAndShape)Marshal.GetDelegateForFunctionPointer(trainingApi_.OrtGetParameterTypeAndShape, typeof(DOrtGetParameterTypeAndShape));
+                    OrtGetParameterTypeAndShape = (DOrtGetParameterTypeAndShape)Marshal.GetDelegateForFunctionPointer(trainingApi_.GetParameterTypeAndShape, typeof(DOrtGetParameterTypeAndShape));
                     OrtUpdateParameter = (DOrtUpdateParameter)Marshal.GetDelegateForFunctionPointer(trainingApi_.UpdateParameter, typeof(DOrtUpdateParameter));
                     OrtGetParameter = (DOrtGetParameter)Marshal.GetDelegateForFunctionPointer(trainingApi_.GetParameter, typeof(DOrtGetParameter));
                 }
@@ -369,7 +369,7 @@ namespace Microsoft.ML.OnnxRuntime
             public delegate IntPtr /*(OrtStatus*)*/ DOrtGetParameterTypeAndShape(
                                                     IntPtr /*(OrtCheckpointState*)*/ checkpointState,
                                                     byte[] /*(const char*)*/ parameterName,
-                                                    IntPtr /*(OrtTensorTypeAndShapeInfo**)*/ parameterTypeAndShape
+                                                    out IntPtr /*(OrtTensorTypeAndShapeInfo**)*/ parameterTypeAndShape
                                                     );
 
             public static DOrtGetParameterTypeAndShape OrtGetParameterTypeAndShape;
