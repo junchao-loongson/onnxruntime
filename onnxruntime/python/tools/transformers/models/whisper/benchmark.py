@@ -11,6 +11,7 @@ import numpy as np
 import psutil
 import torch
 import whisper
+import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -24,6 +25,93 @@ from transformers import AutoModelForSpeechSeq2Seq, WhisperConfig, WhisperProces
 import onnxruntime as ort
 
 logger = logging.getLogger(__name__)
+
+def recursive_visit(obj, func, visited=None):
+    def recursive_visit_impl(visited, obj, func):
+        if id(obj) in visited:
+            return
+
+        visited.add(id(obj))
+        func(obj)
+
+        if isinstance(obj, (int, float, bool, str, bytes)) or obj is None:
+            return
+
+        if isinstance(obj, (list, tuple, set)):
+            for v in obj:
+                func(v)
+                recursive_visit_impl(visited, v, func)
+            return
+
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                func(k)
+                func(v)
+                recursive_visit_impl(visited, k, func)
+                recursive_visit_impl(visited, v, func)
+            return
+
+        if getattr(obj, "__dict__", None) is not None:
+            for k, v in vars(obj).items():
+                func(k)
+                func(v)
+                recursive_visit_impl(visited, k, func)
+                recursive_visit_impl(visited, v, func)
+            return
+
+        if getattr(obj, "__iter__", None) is not None:
+            for v in obj:
+                func(v)
+                recursive_visit_impl(visited, v, func)
+            return
+
+        print("    >>>> recursive_visit cannot process", type(obj))
+
+    if visited is None:
+        visited = set()
+    visited.add(id(visited))
+    visited.add(id(func))
+    recursive_visit_impl(visited, obj, func)
+
+
+def get_all_inference_sessions(args, model):
+    sessions = {}
+    if args.tuning_results_load_path or args.tuning_results_save_path:
+
+        def get_all_sessions(obj):
+            if isinstance(obj, ort.InferenceSession):
+                sessions[id(obj)] = obj
+
+        recursive_visit(model, get_all_sessions)
+        # recursive_visit(pipeline, get_all_sessions)
+
+    return list(sessions.values())
+
+
+def load_tuning_results(args, sessions):
+    if args.tuning_results_load_path is None or len(sessions) == 0:
+        return
+
+    if not os.path.exists(args.tuning_results_load_path):
+        print(f"ERROR: Cannot find tuning results {args.tuning_results_load_path}")
+        return
+
+    trs = json.load(open(args.tuning_results_load_path))
+    for sess in sessions:
+        sess.set_tuning_results(trs)
+
+
+def save_tuning_results(args, sessions):
+    if args.tuning_results_load_path is None or len(sessions) == 0:
+        return
+
+    from onnxruntime.tools import offline_tuning
+
+    m = offline_tuning.Merger()
+    for sess in sessions:
+        m.merge(sess.get_tuning_results())
+    trs = m.get_merged()
+    json.dump(trs, open(args.tuning_results_save_path, "w"))
 
 
 def get_inputs(args: argparse.Namespace):
@@ -123,8 +211,10 @@ def get_model(args: argparse.Namespace):
         sess_options.enable_profiling = args.profile
         sess_options.register_custom_ops_library(get_library_path())
         if args.verbose:
-            sess_options.log_verbosity_level = 1
-            sess_options.log_severity_level = 1
+            sess_options.log_verbosity_level = 0
+            sess_options.log_severity_level = 0
+            # ort.set_default_logger_severity(0)
+            # ort.set_default_logger_verbosity(1000)
 
     else:
         raise Exception(f"Cannot recognize {args.benchmark_type}")
@@ -354,6 +444,10 @@ def run_ort_inference(args, inputs, model):
         outputs = model.run(None, inputs)
         return outputs
 
+    def handle_output(output):
+        first_end = np.where(output == 50257)[0][0]
+        return output[:first_end+1]
+
     generate_fn = with_io_binding if args.device != "cpu" else without_io_binding
     ort_inputs = prepare_ort_inputs(inputs)
 
@@ -380,7 +474,12 @@ def run_ort_inference(args, inputs, model):
         logger.info(f"Transcription: {ort_outputs[0][0]}")
     else:
         # convert_to_onnx model produces generated ids
-        logger.info(f"Generated token length: {len(ort_outputs[0][0])} tokens")
+        # logger.info(f"Default token length: {len(ort_outputs[0][0])} tokens")
+        actual_output = handle_output(ort_outputs[0][0])
+        logger.info(f"Generated token length: {len(actual_output)} tokens")
+        transcription = args.processor.batch_decode(ort_outputs[0], skip_special_tokens=True)[0]
+        logger.info(f"Transcription: {transcription}")
+
 
     measure_fn(args, generate_fn, ort_inputs)
 
@@ -435,6 +534,21 @@ def parse_args():
         default="",
         help="Path to ONNX model",
     )
+
+    parser.add_argument(
+        "--tuning_results_load_path",
+        type=str,
+        default="",
+        help="Path to ONNX model",
+    )
+
+    parser.add_argument(
+        "--tuning_results_save_path",
+        type=str,
+        default="",
+        help="Path to ONNX model",
+    )
+
 
     # Args for running and evaluating the model
     parser.add_argument("-a", "--audio-path", type=str, required=True, help="Path to audio file for E2E evaluation")
@@ -549,7 +663,10 @@ def main():
             args.decoder_input_ids = [config.decoder_start_token_id]
 
     inputs = get_inputs(args)
+    sessions = get_all_inference_sessions(args, model)
+    load_tuning_results(args, sessions)
     run_inference(args, inputs, model)
+    save_tuning_results(args, sessions)
 
 
 if __name__ == "__main__":
